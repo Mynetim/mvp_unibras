@@ -1,0 +1,684 @@
+// =============================================================================
+// SIGEL — Sistema Integrado de Gestão de Laboratórios e Insumos
+// Schema derivado de docs/PRD-SIGEL.md (SIGEL-PRD-2026-01 v1.0)
+//
+// Três decisões estruturais atravessam este arquivo:
+//
+//   1. MULTI-UNIDADE (RNF01 / RN03) — toda entidade de negócio carrega
+//      `unidadeId`. O filtro por unidade é responsabilidade do middleware de
+//      escopo da aplicação; o schema garante que o campo sempre exista.
+//
+//   2. TRAVA ANTI-CONFLITO (RF06 / RN04) — `Reserva.slotKey` é uma coluna
+//      derivada com restrição de unicidade. Ver a nota no modelo Reserva.
+//
+//   3. ESTOQUE COM HISTÓRICO (RN08) — `EstoqueItem` guarda o saldo corrente e
+//      `MovimentoEstoque` guarda o histórico imutável. Saldo nunca muda sem
+//      movimento gravado, e sempre na mesma transação.
+// =============================================================================
+
+// Validado com Prisma 6 (`npx prisma@6 validate`).
+// No Prisma 7 a propriedade `url` saiu do schema e passou a viver em
+// `prisma.config.ts`. Para o piloto, fixe `"prisma": "^6"` no package.json:
+// é a versão que a maior parte da documentação e dos tutoriais ainda descreve,
+// e uma variável a menos para a turma configurar.
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Duas URLs porque o Postgres gerenciado fica atrás de um pooler de conexões.
+// A aplicação usa a URL em pool — aguenta muitas conexões curtas, que é o
+// padrão de acesso serverless. As migrações usam a conexão direta, porque
+// criam índices e tipos que o pooler de transação não suporta.
+// No Neon, a diferença entre as duas é o sufixo `-pooler` no host.
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+/// PRD §5 — quatro perfis de acesso.
+enum PerfilUsuario {
+  MASTER
+  ADMIN_UNIDADE
+  DOCENTE
+  TECNICO
+}
+
+/// PRD §8 E2.2 CA1 — área do conhecimento do laboratório.
+enum AreaConhecimento {
+  SAUDE
+  TECNOLOGIA
+  ENGENHARIAS
+  CIENCIAS_EXATAS
+  CIENCIAS_AGRARIAS
+  CIENCIAS_HUMANAS
+  OUTRA
+}
+
+enum Turno {
+  MATUTINO
+  VESPERTINO
+  NOTURNO
+}
+
+/// PRD §11.1 — máquina de estados da reserva.
+/// Ocupam o slot: APROVADA e REALIZADA. Os demais liberam.
+enum StatusReserva {
+  SOLICITADA
+  AJUSTE_SOLICITADO
+  APROVADA
+  REJEITADA
+  CANCELADA
+  REALIZADA
+  NAO_REALIZADA
+}
+
+/// PRD §8 E6.1 — estado operacional do equipamento.
+enum StatusEquipamento {
+  OPERANTE
+  EM_MANUTENCAO
+  INOPERANTE
+  BAIXADO
+}
+
+/// PRD §8 E4.1 CA1 — categorias do catálogo de insumos.
+enum CategoriaInsumo {
+  REAGENTE
+  DESCARTAVEL
+  FERRAMENTA
+  COMPONENTE_ELETRONICO
+  VIDRARIA
+  EPI
+  OUTRO
+}
+
+/// PRD §11.2 — tipos de movimento e seu efeito no saldo.
+enum TipoMovimento {
+  ENTRADA           // total ↑
+  RESERVA           // reservado ↑
+  LIBERACAO_RESERVA // reservado ↓
+  BAIXA             // total ↓ e reservado ↓
+  AJUSTE            // total ↑ ou ↓, exige justificativa
+}
+
+enum StatusChamado {
+  ABERTO
+  EM_ATENDIMENTO
+  RESOLVIDO
+  CANCELADO
+}
+
+enum PrioridadeChamado {
+  BAIXA
+  MEDIA
+  ALTA
+}
+
+enum TipoNotificacao {
+  RESERVA_SOLICITADA
+  RESERVA_APROVADA
+  RESERVA_REJEITADA
+  RESERVA_AJUSTE_SOLICITADO
+  RESERVA_CANCELADA
+  ESTOQUE_MINIMO
+  CHAMADO_ABERTO
+  CHAMADO_RESOLVIDO
+  LABORATORIO_BLOQUEADO
+}
+
+/// PRD §8 E8.2 CA1 — ações críticas registradas na trilha de auditoria.
+enum AcaoAuditoria {
+  RESERVA_CANCELADA
+  RESERVA_EXCLUIDA
+  ESTOQUE_AJUSTADO
+  PERMISSAO_ALTERADA
+  EQUIPAMENTO_ESTADO_ALTERADO
+  ACESSO_NEGADO
+  USUARIO_CRIADO
+  USUARIO_DESATIVADO
+}
+
+// =============================================================================
+// E1 / E2 — IDENTIDADE, UNIDADES E INFRAESTRUTURA
+// =============================================================================
+
+/// Campus da rede. Raiz do isolamento de dados (RN03).
+/// PRD §8 E2.1 — incluir uma unidade nova é inserir uma linha, sem deploy.
+model Unidade {
+  id        String   @id @default(cuid())
+  codigo    String   @unique
+  nome      String
+  cidade    String
+  uf        String   @db.Char(2)
+  ativa     Boolean  @default(true)
+
+  /// RN01 — antecedência mínima, em dias, para reserva que envolve insumo.
+  antecedenciaMinimaDias Int @default(3)
+
+  /// E5.1 CA1 — minutos antes do início em que o check-in é liberado.
+  janelaCheckinMinutos   Int @default(30)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  blocos        Bloco[]
+  laboratorios  Laboratorio[]
+  blocosHorario BlocoHorario[]
+  usuarios      Usuario[]
+  cursos        Curso[]
+  disciplinas   Disciplina[]
+  turmas        Turma[]
+  reservas      Reserva[]
+  estoqueItens  EstoqueItem[]
+  movimentos    MovimentoEstoque[]
+  chamados      ChamadoManutencao[]
+  notificacoes  Notificacao[]
+  logs          LogAuditoria[]
+
+  @@map("unidades")
+}
+
+/// Prédio dentro da unidade. PRD §8 E2.1.
+model Bloco {
+  id        String  @id @default(cuid())
+  unidadeId String
+  nome      String
+  descricao String?
+
+  unidade      Unidade       @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  laboratorios Laboratorio[]
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  @@unique([unidadeId, nome])
+  @@index([unidadeId])
+  @@map("blocos")
+}
+
+/// Espaço agendável. PRD §8 E2.2.
+model Laboratorio {
+  id        String @id @default(cuid())
+  unidadeId String
+  blocoId   String
+
+  codigo          String
+  nome            String
+  area            AreaConhecimento
+  capacidadeMaxima Int
+
+  /// E2.2 CA1 — texto livre com as regras específicas de uso.
+  regrasDeUso String?
+
+  /// E2.2 CA1 — lista de EPIs exigidos para entrar no laboratório.
+  episObrigatorios String[]
+
+  ativo Boolean @default(true)
+
+  /// E6.1 CA3 — desnormalizado a partir dos equipamentos essenciais
+  /// inoperantes, para que o calendário não precise agregar a cada leitura.
+  /// Mantido pela mesma transação que altera o estado do equipamento.
+  bloqueado       Boolean @default(false)
+  motivoBloqueio  String?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  unidade      Unidade             @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  bloco        Bloco               @relation(fields: [blocoId], references: [id])
+  equipamentos Equipamento[]
+  reservas     Reserva[]
+  chamados     ChamadoManutencao[]
+
+  @@unique([unidadeId, codigo])
+  @@index([unidadeId, area])
+  @@index([blocoId])
+  @@map("laboratorios")
+}
+
+/// Item fixo do laboratório. PRD §8 E2.2 CA2 e CA3.
+model Equipamento {
+  id            String @id @default(cuid())
+  laboratorioId String
+
+  nome        String
+  patrimonio  String?
+  status      StatusEquipamento @default(OPERANTE)
+
+  /// E2.2 CA3 / RN06 — sem este item o laboratório não pode ser agendado.
+  essencial Boolean @default(false)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  laboratorio Laboratorio         @relation(fields: [laboratorioId], references: [id], onDelete: Cascade)
+  chamados    ChamadoManutencao[]
+
+  @@index([laboratorioId, status])
+  @@map("equipamentos")
+}
+
+/// Faixa de horário agendável dentro de um turno. PRD §8 E2.3.
+/// CA2 — nenhum horário fica fixo no código.
+model BlocoHorario {
+  id        String @id @default(cuid())
+  unidadeId String
+
+  turno      Turno
+  ordem      Int
+  horaInicio String @db.VarChar(5) // "19:00"
+  horaFim    String @db.VarChar(5) // "20:40"
+  ativo      Boolean @default(true)
+
+  unidade  Unidade   @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  reservas Reserva[]
+
+  @@unique([unidadeId, turno, horaInicio])
+  @@index([unidadeId, turno, ordem])
+  @@map("blocos_horario")
+}
+
+/// Pessoa autenticável. PRD §8 E1.1 e E1.2.
+/// `unidadeId` é nulo apenas para o perfil MASTER, que enxerga a rede inteira.
+model Usuario {
+  id        String  @id @default(cuid())
+  unidadeId String?
+
+  nome      String
+  email     String        @unique
+  senhaHash String
+  perfil    PerfilUsuario
+  ativo     Boolean       @default(true)
+
+  /// E1.1 CA2 — bloqueio após cinco tentativas malsucedidas.
+  tentativasLogin Int       @default(0)
+  bloqueadoAte    DateTime?
+  ultimoAcessoEm  DateTime?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  unidade Unidade? @relation(fields: [unidadeId], references: [id])
+
+  reservasSolicitadas Reserva[]           @relation("ReservaSolicitante")
+  reservasDecididas   Reserva[]           @relation("ReservaDecisor")
+  checkinsRealizados  Reserva[]           @relation("ReservaCheckin")
+  movimentos          MovimentoEstoque[]
+  chamadosAbertos     ChamadoManutencao[] @relation("ChamadoSolicitante")
+  chamadosAtribuidos  ChamadoManutencao[] @relation("ChamadoResponsavel")
+  notificacoes        Notificacao[]
+  logs                LogAuditoria[]
+
+  @@index([unidadeId, perfil])
+  @@map("usuarios")
+}
+
+// =============================================================================
+// CONTEXTO ACADÊMICO
+// PRD §13 — alimentado manualmente no piloto; integração acadêmica é v2.
+// =============================================================================
+
+model Curso {
+  id        String @id @default(cuid())
+  unidadeId String
+  nome      String
+  codigo    String
+
+  unidade     Unidade      @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  disciplinas Disciplina[]
+  turmas      Turma[]
+
+  criadoEm DateTime @default(now())
+
+  @@unique([unidadeId, codigo])
+  @@index([unidadeId])
+  @@map("cursos")
+}
+
+model Disciplina {
+  id        String @id @default(cuid())
+  unidadeId String
+  cursoId   String
+  nome      String
+  codigo    String
+  periodo   Int?
+
+  unidade  Unidade   @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  curso    Curso     @relation(fields: [cursoId], references: [id], onDelete: Cascade)
+  reservas Reserva[]
+
+  criadoEm DateTime @default(now())
+
+  @@unique([unidadeId, codigo])
+  @@index([cursoId])
+  @@map("disciplinas")
+}
+
+model Turma {
+  id             String @id @default(cuid())
+  unidadeId      String
+  cursoId        String
+  identificacao  String // "3º período A"
+  semestreLetivo String // "2026.2"
+  qtdAlunos      Int
+
+  unidade  Unidade   @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  curso    Curso     @relation(fields: [cursoId], references: [id], onDelete: Cascade)
+  reservas Reserva[]
+
+  criadoEm DateTime @default(now())
+
+  @@unique([unidadeId, cursoId, identificacao, semestreLetivo])
+  @@index([unidadeId])
+  @@map("turmas")
+}
+
+// =============================================================================
+// E3 — RESERVA E APROVAÇÃO
+// =============================================================================
+
+/// Agendamento de um laboratório para uma aula prática. PRD §8 E3.2 a E3.6.
+///
+/// TRAVA ANTI-CONFLITO (RF06 / RN04) — `slotKey`
+/// ---------------------------------------------
+/// A unicidade precisa valer apenas para os estados que ocupam o horário
+/// (APROVADA e REALIZADA). Um `@@unique([laboratorioId, data, blocoHorarioId])`
+/// simples proibiria até as reservas canceladas, o que quebraria o RF08.
+///
+/// A solução é uma coluna derivada: a aplicação preenche `slotKey` com
+/// `"{laboratorioId}:{yyyy-MM-dd}:{blocoHorarioId}"` ao aprovar, e volta para
+/// NULL ao rejeitar ou cancelar. Como o PostgreSQL não considera dois NULLs
+/// iguais em índice único, a restrição passa a valer só para o slot ocupado —
+/// uma unicidade parcial escrita em Prisma puro.
+///
+/// A escrita de `slotKey` acontece na mesma transação da mudança de status.
+/// A violação da restrição é o mecanismo de defesa contra aprovação
+/// concorrente: uma sucede, a outra recebe erro de unicidade (E3.3 CA2).
+///
+/// Alternativa em migração SQL, se o time preferir:
+///   CREATE UNIQUE INDEX reserva_slot_ativo
+///     ON reservas (laboratorio_id, data, bloco_horario_id)
+///     WHERE status IN ('APROVADA', 'REALIZADA');
+model Reserva {
+  id             String @id @default(cuid())
+  unidadeId      String
+  laboratorioId  String
+  blocoHorarioId String
+  disciplinaId   String
+  turmaId        String
+  solicitanteId  String
+
+  data                 DateTime @db.Date
+  qtdAlunosPrevistos   Int
+  observacoes          String?
+
+  status StatusReserva @default(SOLICITADA)
+
+  /// Chave derivada da trava anti-conflito. Ver a nota acima do modelo.
+  slotKey String? @unique
+
+  // --- Decisão do gestor (E3.4) -------------------------------------------
+  decisorId       String?
+  decididoEm      DateTime?
+  /// RN07 — obrigatória na rejeição e no pedido de ajuste.
+  justificativa   String?
+
+  // --- Check-in (E5.1) -----------------------------------------------------
+  checkinPorId String?
+  checkinEm    DateTime?
+
+  // --- Cancelamento (E3.5) -------------------------------------------------
+  canceladoEm     DateTime?
+  motivoCancelamento String?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  unidade      Unidade      @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  laboratorio  Laboratorio  @relation(fields: [laboratorioId], references: [id])
+  blocoHorario BlocoHorario @relation(fields: [blocoHorarioId], references: [id])
+  disciplina   Disciplina   @relation(fields: [disciplinaId], references: [id])
+  turma        Turma        @relation(fields: [turmaId], references: [id])
+
+  solicitante Usuario  @relation("ReservaSolicitante", fields: [solicitanteId], references: [id])
+  decisor     Usuario? @relation("ReservaDecisor", fields: [decisorId], references: [id])
+  checkinPor  Usuario? @relation("ReservaCheckin", fields: [checkinPorId], references: [id])
+
+  insumos    ReservaInsumo[]
+  movimentos MovimentoEstoque[]
+
+  // Consulta do calendário: laboratório + intervalo de datas (E3.1).
+  @@index([laboratorioId, data])
+  // Fila de aprovação do gestor (E3.4 CA1).
+  @@index([unidadeId, status, data])
+  // Concorrentes pelo mesmo slot, mostradas na tela de decisão (RN04).
+  @@index([laboratorioId, data, blocoHorarioId, status])
+  // Relatórios de ocupação e consumo (E7.1, E7.2).
+  @@index([disciplinaId, data])
+  @@index([solicitanteId])
+  @@map("reservas")
+}
+
+/// Insumo requisitado em uma reserva. PRD §8 E3.2 CA2, E4.3, E5.2.
+model ReservaInsumo {
+  id        String @id @default(cuid())
+  reservaId String
+  insumoId  String
+
+  /// Quantidade pedida pelo docente na solicitação.
+  qtdSolicitada Decimal @db.Decimal(12, 3)
+
+  /// Quantidade efetivamente bloqueada no estoque na aprovação (E4.3 CA1).
+  qtdReservada Decimal @default(0) @db.Decimal(12, 3)
+
+  /// Quantidade realmente consumida, confirmada no check-in (E5.2 CA1 e CA2).
+  qtdConsumida Decimal? @db.Decimal(12, 3)
+
+  /// RN07 / E5.2 CA2 — obrigatória quando consumida difere de reservada.
+  justificativaAjuste String?
+
+  /// Preço unitário congelado no momento do consumo, para que o relatório de
+  /// custo (E7.2 CA2) não mude retroativamente quando o catálogo for reajustado.
+  precoUnitarioNoConsumo Decimal? @db.Decimal(12, 2)
+
+  reserva Reserva @relation(fields: [reservaId], references: [id], onDelete: Cascade)
+  insumo  Insumo  @relation(fields: [insumoId], references: [id])
+
+  @@unique([reservaId, insumoId])
+  @@index([insumoId])
+  @@map("reserva_insumos")
+}
+
+// =============================================================================
+// E4 — CATÁLOGO E ESTOQUE
+// =============================================================================
+
+/// Catálogo do grupo. PRD §8 E4.1 CA3 — o catálogo é compartilhado entre as
+/// unidades; o saldo é que é local. Por isso este modelo não tem `unidadeId`.
+model Insumo {
+  id       String          @id @default(cuid())
+  codigo   String          @unique
+  nome     String
+  categoria CategoriaInsumo
+  /// E4.1 CA2 — "un", "mL", "g", "caixa".
+  unidadeMedida String
+  /// E4.1 CA2 — base do relatório de custo (E7.2).
+  precoUnitario Decimal @db.Decimal(12, 2)
+  ativo         Boolean @default(true)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  estoqueItens   EstoqueItem[]
+  reservaInsumos ReservaInsumo[]
+  movimentos     MovimentoEstoque[]
+
+  @@index([categoria])
+  @@map("insumos")
+}
+
+/// Saldo de um insumo em uma unidade. PRD §8 E4.2 CA1.
+///
+/// SALDO DISPONÍVEL = saldoTotal − saldoReservado (RN02 / PRD §11.2).
+/// Nenhuma escrita aqui acontece sem um MovimentoEstoque na mesma transação
+/// (RN08 / E4.2 CA3).
+model EstoqueItem {
+  id        String @id @default(cuid())
+  insumoId  String
+  unidadeId String
+
+  saldoTotal     Decimal @default(0) @db.Decimal(12, 3)
+  saldoReservado Decimal @default(0) @db.Decimal(12, 3)
+
+  /// E4.5 CA1 — gatilho do alerta de estoque mínimo.
+  quantidadeMinima Decimal @default(0) @db.Decimal(12, 3)
+
+  localizacao String?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  insumo     Insumo             @relation(fields: [insumoId], references: [id], onDelete: Cascade)
+  unidade    Unidade            @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  movimentos MovimentoEstoque[]
+
+  @@unique([insumoId, unidadeId])
+  @@index([unidadeId])
+  @@map("estoque_itens")
+}
+
+/// Histórico imutável de estoque. PRD §11.2 e RN08.
+/// Somente inserção: não existe rota de edição nem de exclusão. Corrigir um
+/// erro significa lançar um movimento de AJUSTE com justificativa.
+model MovimentoEstoque {
+  id            String @id @default(cuid())
+  estoqueItemId String
+  insumoId      String
+  unidadeId     String
+  usuarioId     String
+  /// Preenchido quando o movimento nasce de uma reserva (RESERVA, LIBERACAO,
+  /// BAIXA). Nulo em ENTRADA e em AJUSTE avulso.
+  reservaId String?
+
+  tipo TipoMovimento
+  /// Positiva ou negativa conforme o tipo. Ver a tabela do PRD §11.2.
+  quantidade Decimal @db.Decimal(12, 3)
+
+  /// RN07 — obrigatória em AJUSTE.
+  justificativa String?
+
+  /// Fotografia do saldo após o movimento, para reconstruir o extrato sem
+  /// precisar somar a tabela inteira.
+  saldoTotalApos     Decimal @db.Decimal(12, 3)
+  saldoReservadoApos Decimal @db.Decimal(12, 3)
+
+  criadoEm DateTime @default(now())
+
+  estoqueItem EstoqueItem @relation(fields: [estoqueItemId], references: [id], onDelete: Cascade)
+  insumo      Insumo      @relation(fields: [insumoId], references: [id])
+  unidade     Unidade     @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  usuario     Usuario     @relation(fields: [usuarioId], references: [id])
+  reserva     Reserva?    @relation(fields: [reservaId], references: [id])
+
+  @@index([estoqueItemId, criadoEm])
+  @@index([unidadeId, tipo, criadoEm])
+  @@index([reservaId])
+  @@map("movimentos_estoque")
+}
+
+// =============================================================================
+// E6 — MANUTENÇÃO E OCORRÊNCIAS
+// =============================================================================
+
+/// Chamado de reparo ou calibração. PRD §8 E6.2.
+model ChamadoManutencao {
+  id            String  @id @default(cuid())
+  unidadeId     String
+  laboratorioId String
+  /// E6.2 CA2 — o chamado pode ser do laboratório ou de um equipamento.
+  equipamentoId String?
+  solicitanteId String
+  responsavelId String?
+
+  titulo     String
+  descricao  String
+  status     StatusChamado     @default(ABERTO)
+  prioridade PrioridadeChamado @default(MEDIA)
+
+  resolvidoEm     DateTime?
+  solucaoAplicada String?
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  unidade     Unidade      @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+  laboratorio Laboratorio  @relation(fields: [laboratorioId], references: [id])
+  equipamento Equipamento? @relation(fields: [equipamentoId], references: [id])
+  solicitante Usuario      @relation("ChamadoSolicitante", fields: [solicitanteId], references: [id])
+  responsavel Usuario?     @relation("ChamadoResponsavel", fields: [responsavelId], references: [id])
+
+  @@index([unidadeId, status])
+  @@index([laboratorioId, status])
+  @@index([equipamentoId])
+  @@map("chamados_manutencao")
+}
+
+// =============================================================================
+// E8 — PLATAFORMA
+// =============================================================================
+
+/// Aviso in-app. PRD §6.2 — notificação por e-mail e push está fora do MVP.
+model Notificacao {
+  id        String @id @default(cuid())
+  usuarioId String
+  unidadeId String
+
+  tipo     TipoNotificacao
+  titulo   String
+  mensagem String
+  /// Rota interna do recurso relacionado, ex.: "/reservas/abc123".
+  link     String?
+  lidaEm   DateTime?
+
+  criadoEm DateTime @default(now())
+
+  usuario Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  unidade Unidade @relation(fields: [unidadeId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, lidaEm, criadoEm])
+  @@map("notificacoes")
+}
+
+/// Trilha de auditoria. PRD §8 E8.2.
+/// CA3 — somente inserção. Não expor rota de update nem de delete.
+model LogAuditoria {
+  id        String  @id @default(cuid())
+  usuarioId String?
+  unidadeId String?
+
+  acao AcaoAuditoria
+  /// Nome do modelo afetado, ex.: "Reserva".
+  entidade   String
+  entidadeId String?
+
+  /// Estado antes e depois, para reconstruir o que mudou.
+  dadosAntes  Json?
+  dadosDepois Json?
+
+  ip        String? @db.VarChar(45)
+  userAgent String?
+
+  criadoEm DateTime @default(now())
+
+  usuario Usuario? @relation(fields: [usuarioId], references: [id])
+  unidade Unidade? @relation(fields: [unidadeId], references: [id])
+
+  @@index([unidadeId, criadoEm])
+  @@index([entidade, entidadeId])
+  @@index([usuarioId, criadoEm])
+  @@map("logs_auditoria")
+}

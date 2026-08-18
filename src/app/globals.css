@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+/* =============================================================================
+   SIGEL — tokens de identidade visual
+   Paleta "bancada de laboratório": petróleo profundo como estrutura, âmbar de
+   sódio como acento único, neutros com viés frio. Os mesmos tokens do plano de
+   sprints, para que documento e produto falem a mesma língua.
+
+   Os valores vivem em variáveis CSS e são expostos ao Tailwind com
+   `@theme inline`, de modo que `bg-paper` e `text-ink` seguem sozinhos a
+   preferência de tema do sistema.
+   ========================================================================== */
+
+:root {
+  --c-paper: #f4f6f5;
+  --c-surface: #ffffff;
+  --c-surface-2: #eaeeec;
+  --c-ink: #0d2427;
+  --c-ink-2: #3c5155;
+  --c-ink-3: #6c8083;
+  --c-rule: #cdd8d6;
+  --c-rule-strong: #9fb2b0;
+  --c-accent: #a85c15;
+  --c-accent-hover: #8e4c10;
+  --c-accent-soft: #f4e5d3;
+  --c-teal: #1b6b67;
+  --c-danger: #9e3d28;
+  --c-danger-soft: #f7e6e0;
+
+  /* Painel da marca: escuro nos dois temas — é a identidade, não a superfície. */
+  --c-brand: #0d2427;
+  --c-brand-ink: #e7efed;
+  --c-brand-ink-2: #9fb6b4;
+  --c-brand-rule: #1e3d42;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --c-paper: #0a1718;
+    --c-surface: #122729;
+    --c-surface-2: #193337;
+    --c-ink: #e7efed;
+    --c-ink-2: #b3c5c4;
+    --c-ink-3: #7f9796;
+    --c-rule: #254449;
+    --c-rule-strong: #3d6a6f;
+    --c-accent: #e09a50;
+    --c-accent-hover: #efae68;
+    --c-accent-soft: #2a1d12;
+    --c-teal: #5dbbb1;
+    --c-danger: #e28c74;
+    --c-danger-soft: #331c16;
+
+    /* Mais fundo que o papel escuro, para o painel não se dissolver no fundo. */
+    --c-brand: #061213;
+    --c-brand-ink: #e7efed;
+    --c-brand-ink-2: #9fb6b4;
+    --c-brand-rule: #17343a;
+  }
+}
+
+@theme inline {
+  --color-paper: var(--c-paper);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-ink-3: var(--c-ink-3);
+  --color-rule: var(--c-rule);
+  --color-rule-strong: var(--c-rule-strong);
+  --color-accent: var(--c-accent);
+  --color-accent-hover: var(--c-accent-hover);
+  --color-accent-soft: var(--c-accent-soft);
+  --color-teal: var(--c-teal);
+  --color-danger: var(--c-danger);
+  --color-danger-soft: var(--c-danger-soft);
+  --color-brand: var(--c-brand);
+  --color-brand-ink: var(--c-brand-ink);
+  --color-brand-ink-2: var(--c-brand-ink-2);
+  --color-brand-rule: var(--c-brand-rule);
+
+  --font-display: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "SF Mono", Menlo, ui-monospace, monospace;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--c-paper);
+    color: var(--c-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* DoD: foco de teclado sempre visível. */
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Malha da grade horária — motivo de fundo do painel da marca.
+   Desenhada com gradientes para não custar uma requisição de imagem. */
+.malha-grade {
+  background-image:
+    linear-gradient(to right, var(--c-brand-rule) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--c-brand-rule) 1px, transparent 1px);
+  background-size: 56px 44px;
+  opacity: 0.5;
+}
