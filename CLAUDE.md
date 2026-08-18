@@ -47,6 +47,7 @@ relate.
 | `grill-with-docs` | Entrevista para afiar um plano ou design, gerando ADR e glossário |
 | `grilling` | Interrogatório de decisão em rondas, com árvore de decisão |
 | `domain-modeling` | Construir e afiar o modelo de domínio, `CONTEXT.md` e ADRs |
+| `ui-ux-pro-max` | Base de estilos, paletas, tipografia e diretrizes de UX por stack |
 
 `grill-with-docs` chama as outras duas — as três precisam estar instaladas.
 Restaurar após clonar:
@@ -57,6 +58,13 @@ npx skills experimental_install
 
 Skills de terceiros rodam com permissão total de agente. **Leia o `SKILL.md`
 antes de invocar uma que você não instalou.**
+
+`ui-ux-pro-max` traz scripts Python que ela pede para executar — é a única com
+código executável. Auditada em 18/08/2026: sem acesso de rede, sem `subprocess`,
+sem `eval`. Escreve arquivo em um único lugar, na função `--persist`, com escrita
+atômica e defesa explícita contra path traversal. O scan de origem marca
+**High Risk** pelo fato de embarcar código executável, não por achado específico.
+Requer Python 3 no PATH.
 
 ## Ao escrever documentação
 

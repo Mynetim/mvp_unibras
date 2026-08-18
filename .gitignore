@@ -17,3 +17,7 @@ Thumbs.db
 # Symlinks de skills: caminho absoluto, especifico da maquina.
 # Restaure com: npx skills experimental_install
 .claude/skills/
+
+# Artefatos compilados de Python (skills trazem scripts .py)
+__pycache__/
+*.pyc
