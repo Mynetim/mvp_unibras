@@ -13,3 +13,7 @@ next-env.d.ts
 Thumbs.db
 
 .vercel
+
+# Symlinks de skills: caminho absoluto, especifico da maquina.
+# Restaure com: npx skills experimental_install
+.claude/skills/
