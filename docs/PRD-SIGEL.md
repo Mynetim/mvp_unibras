@@ -390,7 +390,9 @@ Saldo disponível = total − reservado.
 
 Unidade · Bloco · Laboratorio · Equipamento · BlocoHorario · Usuario · Curso · Disciplina · Turma · Reserva · ReservaInsumo · Insumo · EstoqueItem · MovimentoEstoque · ChamadoManutencao · Notificacao · LogAuditoria
 
-A implementação está em [`prisma/schema.prisma`](../prisma/schema.prisma).
+O dicionário de dados completo — campos, tipos, restrições, índices e as
+decisões de modelagem — está em [`docs/SCHEMA-SIGEL.md`](SCHEMA-SIGEL.md).
+A definição executável está em [`prisma/schema.prisma`](../prisma/schema.prisma).
 
 ## 12. Fora de escopo do produto
 
